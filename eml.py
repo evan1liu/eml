@@ -54,12 +54,12 @@ def reduce_tree(tree: E) -> Union[Node, E]:
         return 1
     return tree
 
-## Starting to define functions and constants
-## Important rules to follow:
-## Must not use python default math symbols like +, -, *, or /
-## Only use the functions derived from the original EML function
-## For example: addition(x, y), subtraction(x, y), multiply(x, y), division(x, y), etc.
-## Only one single base constant is allowed which is the number 1
+# Starting to define functions and constants
+# Important rules to follow:
+# Must not use python default math symbols like +, -, *, or /
+# Only use the functions derived from the original EML function
+# For example: addition(x, y), subtraction(x, y), multiply(x, y), division(x, y), etc.
+# Only one single base constant is allowed which is the number 1
 
 def exp(x: Node) -> E:
     return E(x, 1)
@@ -78,12 +78,8 @@ def zero(x: Node) -> E:
 print(f"zero = {simplify(evaluate(zero(1)))}")
 print_tree(zero)
 
-def negation(x: Node) -> E:
-    return E(zero(1), E(E(ln(x), euler), 1))
-print_tree(negation)
-
-## Reduction techniques: input x the output is x also.
-## I'm gonna figure out what to do with these two functions later
+# Reduction techniques: input x the output is x also.
+# I'm gonna figure out what to do with these two functions later
 def LRLR(x: Node) -> E:
     return E(1, E(E(1, E(x, 1)),1))
 print_tree(LRLR)
@@ -92,14 +88,7 @@ def RLRL(x: Node) -> E:
     return E(E(1, E(E(1, x), 1)), 1)
 print_tree(RLRL)
 
-## Continue
-def ln_neg(x: Node) -> E:
-    return E(zero(1), E(E(zero(1), negation(x)), 1))
-print_tree(ln_neg)
-
-def addition(x: Node, y: Node) -> E:
-    return negation(E(ln_neg(x), exp(y)))
-print_tree(addition)
-
+# Continue
 def subtraction(x: Node, y: Node) -> E:
-    return addition()
+    return E(ln(x), exp(y))
+print_tree(subtraction)
