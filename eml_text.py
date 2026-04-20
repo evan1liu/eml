@@ -7,8 +7,8 @@ Run:
     source venv/bin/activate && python3 eml_text.py 4
     source venv/bin/activate && python3 eml_text.py --random 4
 
-You will be asked **[d]eterministic** vs **[r]andom** unless you pass
-``--deterministic`` or ``--random``.
+You will be asked **[d]eterministic**, **[r]andom**, or **[m]erge** unless
+you pass ``--deterministic``, ``--random`` or ``--merge``.
 """
 
 import argparse
@@ -73,6 +73,8 @@ def format_state(state: GraphState, step_idx: int) -> str:
 def print_evolution(max_step: int, universe: str) -> None:
     if universe == "random":
         from eml_universe_random import evolve
+    elif universe == "merge":
+        from eml_universe_merge import evolve
     else:
         from eml_universe import evolve
     history = evolve(max_step)
@@ -100,6 +102,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="deterministic universe (skip prompt)",
     )
+    u.add_argument(
+        "--merge",
+        action="store_true",
+        help="value-merging universe (skip prompt)",
+    )
     return parser.parse_args()
 
 
@@ -108,14 +115,20 @@ def resolve_text_universe(args: argparse.Namespace) -> str:
         return "random"
     if args.deterministic:
         return "deterministic"
+    if args.merge:
+        return "merge"
     print("EML text export")
     while True:
-        s = input("Universe: [d]eterministic or [r]andom (default d): ").strip().lower()
+        s = input(
+            "Universe: [d]eterministic, [r]andom, or [m]erge (default d): "
+        ).strip().lower()
         if s in ("", "d", "det", "deterministic"):
             return "deterministic"
         if s in ("r", "rand", "random"):
             return "random"
-        print("  Type d or r.")
+        if s in ("m", "merge"):
+            return "merge"
+        print("  Type d, r, or m.")
 
 
 def main() -> None:

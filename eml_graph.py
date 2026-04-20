@@ -11,8 +11,8 @@ Run:
     source venv/bin/activate && python3 eml_graph.py
     source venv/bin/activate && python3 eml_graph.py --latex --random
 
-You will be asked **[d]eterministic** vs **[r]andom** unless you pass
-``--deterministic`` or ``--random``.
+You will be asked **[d]eterministic**, **[r]andom**, or **[m]erge** unless
+you pass ``--deterministic``, ``--random`` or ``--merge``.
 
 Scroll wheel (or trackpad scroll) over the plot zooms in/out around the cursor.
 Keys + / - zoom centered on the view (helps if scroll events do not fire).
@@ -28,7 +28,7 @@ Fonts and edge stroke widths scale when you zoom (like zooming a picture).
 
 import argparse
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -39,6 +39,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 from matplotlib.widgets import Button
 
+from eml_dimension import compute_dimension, compute_dimension_from_center
 from eml_universe import GraphState
 
 
@@ -56,6 +57,36 @@ BTN_FACE = "#2d3748"
 BTN_HOVER = "#3d4a5c"
 BTN_LABEL = "#e6eaf2"
 BTN_EDGE = "#4a5568"
+
+
+# Recognised significant constants get a distinctive box color so they pop
+# against the regular pale-blue nodes. Keys must be SymEngine-hashable Basics
+# whose `==` against the corresponding node value returns True.
+from symengine import E as _SYM_E, I as _SYM_I, Integer as _SYM_INT, pi as _SYM_PI
+
+CONSTANT_FACES: Dict[sp.Basic, str] = {
+    _SYM_INT(0):  "#cfd2cf",
+    _SYM_INT(1):  "#ffd166",
+    _SYM_INT(-1): "#ef476f",
+    _SYM_E:       "#f96e46",
+    _SYM_PI:      "#4cc9f0",
+    _SYM_I:       "#b388eb",
+}
+
+CONSTANT_LABELS: Dict[sp.Basic, str] = {
+    _SYM_INT(0):  "0",
+    _SYM_INT(1):  "1",
+    _SYM_INT(-1): "-1",
+    _SYM_E:       "e",
+    _SYM_PI:      "π",
+    _SYM_I:       "i",
+}
+
+
+def constant_face_color(value: sp.Basic) -> Optional[str]:
+    """Return the highlight color for `value` if it is one of the recognised
+    significant constants, else None."""
+    return CONSTANT_FACES.get(value)
 
 
 def node_bbox_kwargs(font_size: float) -> Dict[str, object]:
@@ -157,7 +188,13 @@ def compute_layout(g: nx.Graph, state: GraphState) -> Dict[int, tuple]:
 CHAR_H_DATA = 0.14   # data-units for the rendered-text height (1em line)
 BOX_PAD_DATA = 0.05  # padding between text and box edge (data coords)
 BOX_GAP_DATA = 0.04  # extra gap enforced between two different boxes
-LABEL_REF_FS_PT = 100.0  # font size used only for measuring aspect ratios
+# Measure aspects at the smallest fontsize we will ever actually render (same as
+# MIN_READABLE_FS defined below). At tiny fontsizes matplotlib's integer pixel
+# rounding widens glyphs relative to scaled-down 100pt measurements, so sizing
+# boxes from a 100pt reference leaves them systematically too narrow at display
+# fontsizes of 4-10pt. Measuring at the minimum rendered fontsize gives us the
+# worst-case aspect and therefore the widest (safest) box.
+LABEL_REF_FS_PT = 4.0
 
 
 # pixel-aspect (width/height) of each label at LABEL_REF_FS_PT, keyed by string
@@ -265,17 +302,30 @@ def compute_view_bounds(
 
 
 def initial_fontsize_for_ax(ax: plt.Axes) -> float:
-    """Pt size so one line of text (CHAR_H_DATA data tall) maps to ~ that many
-    data-to-point units at the axes' current transform."""
-    y0, y1 = ax.get_ylim()
-    bbox = ax.get_position()
+    """Pick a pt size so that a line of text has bbox-height equal to
+    ``CHAR_H_DATA`` in the axes' *actual* data-to-pixel transform.
+    We measure the live ``transData`` after ``apply_aspect()`` so the value is
+    correct even when matplotlib adjusts the axes to match aspect='equal'."""
+    ax.apply_aspect()
     fig = ax.figure
-    fig_h_inches = fig.get_size_inches()[1]
-    ax_h_inches = max(1e-3, bbox.height * fig_h_inches)
-    span_y = max(y1 - y0, 1e-6)
-    inches_per_data = ax_h_inches / span_y
-    pt_for_char_h = 72.0 * inches_per_data * CHAR_H_DATA
-    return max(4.0, min(40.0, 0.72 * pt_for_char_h))
+    t0 = ax.transData.transform((0.0, 0.0))
+    t1 = ax.transData.transform((0.0, 1.0))
+    pixels_per_data_y = max(abs(t1[1] - t0[1]), 1e-6)
+    target_bbox_px = CHAR_H_DATA * pixels_per_data_y
+    # Empirically (measured on this mpl build) text bbox height in pixels
+    # equals fontsize * dpi / 72 within ~3%, so fontsize_pt = bbox_px*72/dpi.
+    dpi = fig.dpi
+    fs_pt = target_bbox_px * 72.0 / dpi
+    # 0.88 safety factor leaves a small vertical margin inside CHAR_H_DATA so
+    # descenders never touch the box edge. No hard minimum: when fs is too
+    # small to render cleanly we hide the label entirely (see MIN_READABLE_FS).
+    return max(0.01, 0.88 * fs_pt)
+
+
+# Below this fontsize (in pt) matplotlib's pixel rounding makes character
+# width unpredictable, so we hide labels rather than let them overflow their
+# boxes. Boxes themselves stay visible; zooming in restores the label.
+MIN_READABLE_FS = 4.0
 
 
 def sympy_display_str(expr: sp.Expr, use_latex: bool) -> str:
@@ -381,12 +431,14 @@ def update_zoom_dependent_style(ax: plt.Axes) -> None:
     if ref is None or base_fs is None or base_lw is None:
         return
     ratio = ref / max(_view_size_sqrt(ax), 1e-15)
-    fs = max(1.5, base_fs * ratio)
+    fs = max(0.01, base_fs * ratio)
     lw = max(0.15, min(base_lw * ratio, 12.0))
+    show_labels = fs >= MIN_READABLE_FS
     for t in ax.texts:
         if not getattr(t, "_eml_node_label", False):
             continue
         t.set_fontsize(fs)
+        t.set_visible(show_labels)
     for p in ax.patches:
         if isinstance(p, FancyArrowPatch):
             p.set_linewidth(lw)
@@ -429,17 +481,33 @@ def truncate_label(s: str) -> str:
     return s[: MAX_LABEL_CHARS - 1] + "\u2026"
 
 
+def node_face_edge_colors(value: sp.Basic) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+    """Per-node (face, edge) RGBA. Recognised constants get a saturated face
+    + matching solid border so they pop; everything else uses the muted
+    default palette."""
+    highlight = constant_face_color(value)
+    if highlight is not None:
+        return (
+            mcolors.to_rgba(highlight, alpha=0.85),
+            mcolors.to_rgba(highlight, alpha=1.0),
+        )
+    return (
+        mcolors.to_rgba(NODE_FACE, alpha=NODE_FACE_ALPHA),
+        mcolors.to_rgba(NODE_EDGE, alpha=0.92),
+    )
+
+
 def draw_node_boxes_and_labels(
     ax: plt.Axes,
     pos: Dict[int, List[float]],
     sizes: Dict[int, Tuple[float, float]],
     labels: Dict[int, str],
+    values: Dict[int, sp.Basic],
     font_size: float,
 ) -> None:
-    face = mcolors.to_rgba(NODE_FACE, alpha=NODE_FACE_ALPHA)
-    edge = mcolors.to_rgba(NODE_EDGE, alpha=0.92)
     for nid, (x, y) in pos.items():
         w, h = sizes[nid]
+        face, edge = node_face_edge_colors(values[nid])
         patch = FancyBboxPatch(
             (x - w / 2.0, y - h / 2.0),
             w, h,
@@ -455,6 +523,41 @@ def draw_node_boxes_and_labels(
             zorder=5,
         )
         t._eml_node_label = True
+        t._eml_node_pos = (x, y)
+        # Clip the label to the axes rectangle (pixel-accurate), so when the
+        # node box is cut off at the edge the label is cut off the same way
+        # instead of bleeding into the gutter as a "detached" string.
+        t.set_clip_on(True)
+        t.set_clip_box(ax.bbox)
+        if font_size < MIN_READABLE_FS:
+            t.set_visible(False)
+
+
+def constants_present_in(values: Dict[int, sp.Basic]) -> List[sp.Basic]:
+    """The subset of recognised constants that actually appear in this state,
+    in the canonical CONSTANT_FACES order. Empty list -> no legend needed."""
+    seen = set(values.values())
+    return [c for c in CONSTANT_FACES if c in seen]
+
+
+def create_constant_legend(ax: plt.Axes, values: Dict[int, sp.Basic]) -> None:
+    """Top-right legend: one bold colored symbol per recognised constant that
+    actually appears in the current state. Each symbol is drawn in the same
+    highlight color as the matching node boxes."""
+    present = constants_present_in(values)
+    if not present:
+        return
+    x = 0.99
+    for c in reversed(present):
+        ax.text(
+            x, 0.985, CONSTANT_LABELS[c],
+            transform=ax.transAxes,
+            ha="right", va="top",
+            fontsize=13, fontweight="bold",
+            color=CONSTANT_FACES[c],
+            zorder=20,
+        )
+        x -= 0.035
 
 
 def create_full_label_inspector(ax: plt.Axes) -> None:
@@ -505,6 +608,35 @@ def connect_node_click_inspector(fig: plt.Figure, ax: plt.Axes) -> int:
     return fig.canvas.mpl_connect("button_press_event", on_click)
 
 
+def format_dim_segment(label: str, dim: Optional[float]) -> Optional[str]:
+    """One '<label> ≈ <value>' pill, or None when the estimate is unavailable."""
+    if dim is None:
+        return None
+    return f"{label} ≈ {dim:.2f}"
+
+
+def format_title(step_idx: int, n_nodes: int, n_links: int, g: nx.Graph) -> str:
+    """Header above the graph. We show two flavours of Wolfram-physics Δ:
+      * dim_avg    -- averaged over every node as source (global view)
+      * dim_center -- measured from a graph-center node (an observer sitting
+                      at the most 'inside' point of the universe)
+    Pure tree topology (|E| == |V| - 1) is flagged because Δ for a tree
+    cannot settle at a finite non-integer d -- it just keeps climbing with
+    the diameter."""
+    base = f"Step {step_idx}   |   {n_nodes} nodes,  {n_links} links"
+    segments = [base]
+    for label, value in (
+        ("dim_avg", compute_dimension(g)),
+        ("dim_center", compute_dimension_from_center(g)),
+    ):
+        seg = format_dim_segment(label, value)
+        if seg is not None:
+            segments.append(seg)
+    if len(segments) > 1 and g.number_of_edges() == g.number_of_nodes() - 1:
+        segments[-1] = segments[-1] + " (acyclic)"
+    return "   |   ".join(segments)
+
+
 def render(ax: plt.Axes, state: GraphState, step_idx: int, use_latex: bool = False) -> None:
     fig = ax.figure
     ax._eml_rendering = True
@@ -512,6 +644,12 @@ def render(ax: plt.Axes, state: GraphState, step_idx: int, use_latex: bool = Fal
         ax.clear()
         fig.patch.set_facecolor(DARK_BG)
         ax.set_facecolor(DARK_BG)
+        # "datalim" keeps the axes rectangle fixed and expands the data limits
+        # to match aspect='equal'. That ensures every node position stays
+        # inside the axes rect (so boxes/links aren't orphaned into the gutter
+        # between axes and figure). initial_fontsize_for_ax calls
+        # ax.apply_aspect() before reading transData so the fontsize accounts
+        # for the post-adjustment limits.
         ax.set_aspect("equal", adjustable="datalim")
 
         g = build_nx_graph(state)
@@ -530,20 +668,21 @@ def render(ax: plt.Axes, state: GraphState, step_idx: int, use_latex: bool = Fal
         pos = scale_layout_for_boxes(pos, sizes)
         pos = pack_rectangles_no_overlap(pos, sizes)
 
-        minx, maxx, miny, maxy = compute_view_bounds(pos, sizes, margin=0.08)
+        minx, maxx, miny, maxy = compute_view_bounds(pos, sizes, margin=0.18)
         ax.set_xlim(minx, maxx)
         ax.set_ylim(miny, maxy)
 
         draw_networkx_edges_curved(ax, g, {nid: tuple(p) for nid, p in pos.items()})
         fs = initial_fontsize_for_ax(ax)
-        draw_node_boxes_and_labels(ax, pos, sizes, labels, fs)
+        draw_node_boxes_and_labels(ax, pos, sizes, labels, state.values, fs)
 
         ax.set_title(
-            f"Step {step_idx}   |   {n} nodes,  {len(state.edges)} links",
+            format_title(step_idx, n, len(state.edges), g),
             color=TITLE_COLOR,
         )
         ax.set_axis_off()
         create_full_label_inspector(ax)
+        create_constant_legend(ax, state.values)
 
         ax._eml_ref_span = _view_size_sqrt(ax)
         ax._eml_base_fs = float(fs)
@@ -574,6 +713,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="use deterministic universe (skip interactive prompt)",
     )
+    u.add_argument(
+        "--merge",
+        action="store_true",
+        help="use value-merging universe (same-value nodes collapse)",
+    )
     return p.parse_args()
 
 
@@ -582,14 +726,20 @@ def resolve_graph_universe(args: argparse.Namespace) -> str:
         return "random"
     if args.deterministic:
         return "deterministic"
+    if args.merge:
+        return "merge"
     print("EML graph viewer")
     while True:
-        s = input("Universe: [d]eterministic or [r]andom (default d): ").strip().lower()
+        s = input(
+            "Universe: [d]eterministic, [r]andom, or [m]erge (default d): "
+        ).strip().lower()
         if s in ("", "d", "det", "deterministic"):
             return "deterministic"
         if s in ("r", "rand", "random"):
             return "random"
-        print("  Type d or r.")
+        if s in ("m", "merge"):
+            return "merge"
+        print("  Type d, r, or m.")
 
 
 def main() -> None:
@@ -597,6 +747,8 @@ def main() -> None:
     universe = resolve_graph_universe(args)
     if universe == "random":
         from eml_universe_random import initial_state, step
+    elif universe == "merge":
+        from eml_universe_merge import initial_state, step
     else:
         from eml_universe import initial_state, step
 
