@@ -33,14 +33,32 @@ def format_value(value: sp.Expr) -> str:
     return str(value).replace("log(", "ln(")
 
 
-def format_node_header(nid: int, value: sp.Expr, id_width: int) -> str:
-    return f"  [{nid:>{id_width}}] {format_value(value)}"
+def format_charge(charge: int) -> str:
+    """One-character marker so labeled nodes stay aligned in the text dump."""
+    if charge > 0:
+        return "+"
+    if charge < 0:
+        return "-"
+    return "0"
+
+
+def format_node_header(
+    nid: int, value: sp.Expr, id_width: int, charge: int = 0
+) -> str:
+    if charge == 0:
+        return f"  [{nid:>{id_width}}] {format_value(value)}"
+    return f"  [{nid:>{id_width}}] {format_charge(charge)} {format_value(value)}"
 
 
 def format_neighbor_line(
-    neighbor_id: int, neighbor_value: sp.Expr, id_width: int
+    neighbor_id: int, neighbor_value: sp.Expr, id_width: int, charge: int = 0
 ) -> str:
-    return f"      -> [{neighbor_id:>{id_width}}] {format_value(neighbor_value)}"
+    if charge == 0:
+        return f"      -> [{neighbor_id:>{id_width}}] {format_value(neighbor_value)}"
+    return (
+        f"      -> [{neighbor_id:>{id_width}}] "
+        f"{format_charge(charge)} {format_value(neighbor_value)}"
+    )
 
 
 def id_column_width(state: GraphState) -> int:
@@ -57,15 +75,23 @@ def format_step_header(step_idx: int, state: GraphState) -> str:
 def format_state(state: GraphState, step_idx: int) -> str:
     lines: List[str] = [format_step_header(step_idx, state)]
     width = id_column_width(state)
+    charges = getattr(state, "labels", {}) or {}
     for nid in sorted(state.values.keys()):
-        lines.append(format_node_header(nid, state.values[nid], width))
+        lines.append(
+            format_node_header(nid, state.values[nid], width, charges.get(nid, 0))
+        )
         neighbors = sorted_neighbors(state, nid)
         if not neighbors:
             lines.append("      (isolated)")
             continue
         for neighbor_id in neighbors:
             lines.append(
-                format_neighbor_line(neighbor_id, state.values[neighbor_id], width)
+                format_neighbor_line(
+                    neighbor_id,
+                    state.values[neighbor_id],
+                    width,
+                    charges.get(neighbor_id, 0),
+                )
             )
     return "\n".join(lines)
 
@@ -75,6 +101,10 @@ def print_evolution(max_step: int, universe: str) -> None:
         from eml_universe_random import evolve
     elif universe == "merge":
         from eml_universe_merge import evolve
+    elif universe == "holo":
+        from eml_universe_holo import evolve
+    elif universe == "holo_random":
+        from eml_universe_holo_random import evolve
     else:
         from eml_universe import evolve
     history = evolve(max_step)
@@ -107,6 +137,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="value-merging universe (skip prompt)",
     )
+    u.add_argument(
+        "--holo",
+        action="store_true",
+        help="holographic universe with conserved P/N charges (skip prompt)",
+    )
+    u.add_argument(
+        "--holo-random",
+        action="store_true",
+        help="holographic universe with probabilistic P+N collapse (skip prompt)",
+    )
     return parser.parse_args()
 
 
@@ -117,10 +157,14 @@ def resolve_text_universe(args: argparse.Namespace) -> str:
         return "deterministic"
     if args.merge:
         return "merge"
+    if args.holo:
+        return "holo"
+    if getattr(args, "holo_random", False):
+        return "holo_random"
     print("EML text export")
     while True:
         s = input(
-            "Universe: [d]eterministic, [r]andom, or [m]erge (default d): "
+            "Universe: [d]eterministic, [r]andom, [m]erge, [h]olo, holo-[x] random (default d): "
         ).strip().lower()
         if s in ("", "d", "det", "deterministic"):
             return "deterministic"
@@ -128,7 +172,11 @@ def resolve_text_universe(args: argparse.Namespace) -> str:
             return "random"
         if s in ("m", "merge"):
             return "merge"
-        print("  Type d, r, or m.")
+        if s in ("h", "holo"):
+            return "holo"
+        if s in ("x", "hr", "holo-random", "holo_random"):
+            return "holo_random"
+        print("  Type d, r, m, h, or x.")
 
 
 def main() -> None:

@@ -83,10 +83,27 @@ CONSTANT_LABELS: Dict[sp.Basic, str] = {
 }
 
 
+# Charge labels for the holographic universes: +1 = P (positive, red),
+# -1 = N (negative, blue), 0 = neutral (no override, default palette wins).
+CHARGE_FACES: Dict[int, str] = {
+    1:  "#ef476f",
+    -1: "#4cc9f0",
+}
+
+CHARGE_SYMBOLS: Dict[int, str] = {1: "+", -1: "−"}
+
+
 def constant_face_color(value: sp.Basic) -> Optional[str]:
     """Return the highlight color for `value` if it is one of the recognised
     significant constants, else None."""
     return CONSTANT_FACES.get(value)
+
+
+def charge_face_color(charge: int) -> Optional[str]:
+    """Non-neutral charges dominate over value-based coloring so P/N
+    territories are visible at a glance. Neutral returns None so the
+    existing CONSTANT_FACES / default palette takes over."""
+    return CHARGE_FACES.get(charge)
 
 
 def node_bbox_kwargs(font_size: float) -> Dict[str, object]:
@@ -481,10 +498,18 @@ def truncate_label(s: str) -> str:
     return s[: MAX_LABEL_CHARS - 1] + "\u2026"
 
 
-def node_face_edge_colors(value: sp.Basic) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
-    """Per-node (face, edge) RGBA. Recognised constants get a saturated face
-    + matching solid border so they pop; everything else uses the muted
-    default palette."""
+def node_face_edge_colors(
+    value: sp.Basic, charge: int = 0
+) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+    """Per-node (face, edge) RGBA. Non-neutral charges take precedence
+    (holographic universes); otherwise recognised constants get their
+    saturated highlight; otherwise the muted default palette."""
+    charge_color = charge_face_color(charge)
+    if charge_color is not None:
+        return (
+            mcolors.to_rgba(charge_color, alpha=0.85),
+            mcolors.to_rgba(charge_color, alpha=1.0),
+        )
     highlight = constant_face_color(value)
     if highlight is not None:
         return (
@@ -504,10 +529,12 @@ def draw_node_boxes_and_labels(
     labels: Dict[int, str],
     values: Dict[int, sp.Basic],
     font_size: float,
+    charges: Optional[Dict[int, int]] = None,
 ) -> None:
+    charges = charges or {}
     for nid, (x, y) in pos.items():
         w, h = sizes[nid]
-        face, edge = node_face_edge_colors(values[nid])
+        face, edge = node_face_edge_colors(values[nid], charges.get(nid, 0))
         patch = FancyBboxPatch(
             (x - w / 2.0, y - h / 2.0),
             w, h,
@@ -538,6 +565,31 @@ def constants_present_in(values: Dict[int, sp.Basic]) -> List[sp.Basic]:
     in the canonical CONSTANT_FACES order. Empty list -> no legend needed."""
     seen = set(values.values())
     return [c for c in CONSTANT_FACES if c in seen]
+
+
+def charges_present_in(charges: Dict[int, int]) -> List[int]:
+    """Non-neutral charges actually in play, in canonical +1, -1 order."""
+    seen = set(charges.values())
+    return [c for c in (1, -1) if c in seen]
+
+
+def create_charge_legend(ax: plt.Axes, charges: Dict[int, int]) -> None:
+    """Top-left: one bold '+' / '−' per charge state present, colored with
+    the matching node face. No-op when no charges are set (non-holo universes)."""
+    present = charges_present_in(charges)
+    if not present:
+        return
+    x = 0.01
+    for c in present:
+        ax.text(
+            x, 0.92, CHARGE_SYMBOLS[c],
+            transform=ax.transAxes,
+            ha="left", va="top",
+            fontsize=15, fontweight="bold",
+            color=CHARGE_FACES[c],
+            zorder=20,
+        )
+        x += 0.035
 
 
 def create_constant_legend(ax: plt.Axes, values: Dict[int, sp.Basic]) -> None:
@@ -674,7 +726,10 @@ def render(ax: plt.Axes, state: GraphState, step_idx: int, use_latex: bool = Fal
 
         draw_networkx_edges_curved(ax, g, {nid: tuple(p) for nid, p in pos.items()})
         fs = initial_fontsize_for_ax(ax)
-        draw_node_boxes_and_labels(ax, pos, sizes, labels, state.values, fs)
+        charges = getattr(state, "labels", {}) or {}
+        draw_node_boxes_and_labels(
+            ax, pos, sizes, labels, state.values, fs, charges=charges
+        )
 
         ax.set_title(
             format_title(step_idx, n, len(state.edges), g),
@@ -683,6 +738,7 @@ def render(ax: plt.Axes, state: GraphState, step_idx: int, use_latex: bool = Fal
         ax.set_axis_off()
         create_full_label_inspector(ax)
         create_constant_legend(ax, state.values)
+        create_charge_legend(ax, charges)
 
         ax._eml_ref_span = _view_size_sqrt(ax)
         ax._eml_base_fs = float(fs)
@@ -718,6 +774,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="use value-merging universe (same-value nodes collapse)",
     )
+    u.add_argument(
+        "--holo",
+        action="store_true",
+        help="holographic universe: conserved P/N charge labels, replace-flavor leaves",
+    )
+    u.add_argument(
+        "--holo-random",
+        action="store_true",
+        help="holographic universe with probabilistic P+N collapse",
+    )
     return p.parse_args()
 
 
@@ -728,10 +794,14 @@ def resolve_graph_universe(args: argparse.Namespace) -> str:
         return "deterministic"
     if args.merge:
         return "merge"
+    if args.holo:
+        return "holo"
+    if getattr(args, "holo_random", False):
+        return "holo_random"
     print("EML graph viewer")
     while True:
         s = input(
-            "Universe: [d]eterministic, [r]andom, or [m]erge (default d): "
+            "Universe: [d]eterministic, [r]andom, [m]erge, [h]olo, holo-[x] random (default d): "
         ).strip().lower()
         if s in ("", "d", "det", "deterministic"):
             return "deterministic"
@@ -739,7 +809,11 @@ def resolve_graph_universe(args: argparse.Namespace) -> str:
             return "random"
         if s in ("m", "merge"):
             return "merge"
-        print("  Type d, r, or m.")
+        if s in ("h", "holo"):
+            return "holo"
+        if s in ("x", "hr", "holo-random", "holo_random"):
+            return "holo_random"
+        print("  Type d, r, m, h, or x.")
 
 
 def main() -> None:
@@ -749,6 +823,10 @@ def main() -> None:
         from eml_universe_random import initial_state, step
     elif universe == "merge":
         from eml_universe_merge import initial_state, step
+    elif universe == "holo":
+        from eml_universe_holo import initial_state, step
+    elif universe == "holo_random":
+        from eml_universe_holo_random import initial_state, step
     else:
         from eml_universe import initial_state, step
 
