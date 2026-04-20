@@ -1,7 +1,7 @@
 import inspect
 from collections import namedtuple
 from typing import Callable, Union
-from sympy import Symbol, Expr, oo, exp as sym_exp, log as sym_log, simplify
+from sympy import Symbol, Expr, exp as sym_exp, log as sym_log, simplify
 
 E = namedtuple('E', ['x', 'y'])
 
@@ -41,12 +41,9 @@ def print_tree(node: Union[Node, Callable[..., E]], prefix: str = "", is_last: b
             print()
             print()
 
-def safe_log(b: Union[int, Expr]) -> Expr:
-    return -oo if b == 0 else sym_log(b)
-
 def evaluate(node: Node) -> Union[int, Expr]:
     if isinstance(node, E):
-        return sym_exp(evaluate(node.x)) - safe_log(evaluate(node.y))
+        return sym_exp(evaluate(node.x)) - sym_log(evaluate(node.y))
     return node
 
 def reduce_tree(tree: E) -> Union[Node, E]:
@@ -92,58 +89,14 @@ def RLRL(x: Node) -> E:
 print_tree(RLRL)
 
 # Continue
-def subtraction(x: Node, y: Node) -> E:
-    return E(ln(x), exp(y))
-print_tree(subtraction)
+# This subtraction may only work for inputs where x > 0
+# def subtraction(x: Node, y: Node) -> E:
+#     return E(ln(x), exp(y))
+# print_tree(subtraction)
 
-def division(x: Node, y: Node) -> E:
-    return exp(E(ln(ln(x)), y))
-print_tree(division)
-
-def negation(x: Node) -> E:
-    return subtraction(zero(1), x)
-print_tree(negation)
-
-def addition(x: Node, y: Node) -> E:
-    return subtraction(x, negation(y))
-print_tree(addition)
-
-def multiply(x: Node, y: Node) -> E:
-    return E(addition(ln(x), ln(y)), 1)
-print_tree(multiply)
-
-# some constants
-neg_one = subtraction(zero(1), 1)
-print(f"-1 = {simplify(evaluate(neg_one))}")
-print_tree(neg_one)
-
-two = addition(1, 1)
-print(f"2 = {simplify(evaluate(two))}")
-print_tree(two)
-
-half = division(1, two)
-print(f"1/2 = {simplify(evaluate(half))}")
-print_tree(half)
-
-# square root, i and π
-def sqrt(x: Node) -> E:
-    return exp(multiply(half, ln(x)))
-print_tree(sqrt)
-print(simplify(evaluate(sqrt(two))))
-
-i = negation(sqrt(neg_one)) # manually correct for the compiler's error
-print_tree(i)
-print(f"i = {simplify(evaluate(i))}")
-
-pi = negation(division(ln(neg_one), i)) # manually correct for the compiler's error
-print_tree(pi)
-print(f"pi = {simplify(evaluate(pi))}")
-
-# trigs
-def cos(x: Node) -> E:
-    return division(addition(exp(multiply(i, x)), exp(negation(multiply(i, x)))), two)
-print_tree(cos)
-
-def sin(x: Node) -> E:
-    return division(subtraction(exp(multiply(i, x)), exp(negation(multiply(i, x)))), multiply(two, i))
-print_tree(sin)
+# This division function works mathematically,
+# but only covers input space where x >= 1 and y > 0
+# (x = 1 case relies on extended-reals: ln(0) = -inf)
+# def division(x: Node, y: Node) -> E:
+#     return exp(E(ln(ln(x)), y))
+# print_tree(division)
